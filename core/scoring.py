@@ -90,6 +90,9 @@ class ScoredResult:
     # LLM judge fields (populated only when judge is used)
     judge_score: Optional[float] = None
     judge_reasoning: Optional[str] = None
+    # Full judge trace (populated only when the judge is invoked)
+    judge_prompt: Optional[str] = None
+    judge_raw_response: Optional[str] = None
 
 
 # ------------------------------------------------------------------ #
@@ -143,9 +146,13 @@ def extract_answer(
 def _extract_multiple_choice(
     response: str, strategies: List[str]
 ) -> tuple[str, List[str]]:
+    # Strip markdown emphasis (**bold**, _italic_, `code`, headings) so answers
+    # like "**A**" or "`B`" are parsed as plain letters. Models frequently wrap
+    # their choice in markdown, which would otherwise defeat extraction.
+    cleaned = re.sub(r"[*_`#>]+", "", response)
     for name, pattern in _MC_PATTERNS:
         strategies.append(name)
-        m = re.search(pattern, response, re.IGNORECASE | re.DOTALL)
+        m = re.search(pattern, cleaned, re.IGNORECASE | re.DOTALL)
         if m:
             return m.group(1).upper(), strategies
     return "", strategies
@@ -259,6 +266,7 @@ class JudgeResult:
     score: float
     reasoning: str
     raw_response: str
+    prompt: str = ""
 
 
 def llm_judge_score(
@@ -314,7 +322,7 @@ def llm_judge_score(
         return None
 
     reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
-    return JudgeResult(score=score, reasoning=reasoning, raw_response=raw)
+    return JudgeResult(score=score, reasoning=reasoning, raw_response=raw, prompt=prompt)
 
 
 
@@ -357,6 +365,8 @@ def score_response(
     # 4. Determine final score
     judge_score: Optional[float] = None
     judge_reasoning: Optional[str] = None
+    judge_prompt: Optional[str] = None
+    judge_raw_response: Optional[str] = None
 
     if exact:
         final_score = config.exact_match_bonus  # 1.0
@@ -369,6 +379,8 @@ def score_response(
         if judge_result is not None:
             judge_score = judge_result.score
             judge_reasoning = judge_result.reasoning
+            judge_prompt = judge_result.prompt
+            judge_raw_response = judge_result.raw_response
             final_score = judge_result.score
             method = ScoringMethodEnum.LLM_JUDGE
             explanation = (
@@ -400,6 +412,8 @@ def score_response(
         explanation=explanation,
         judge_score=judge_score,
         judge_reasoning=judge_reasoning,
+        judge_prompt=judge_prompt,
+        judge_raw_response=judge_raw_response,
     )
 
 

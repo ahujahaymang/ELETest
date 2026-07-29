@@ -187,6 +187,84 @@ class AnthropicAdapter(ModelInterface):
         )
 
 
+class BedrockAdapter(ModelInterface):
+    """Adapter for AWS Bedrock models via the unified Converse API.
+
+    Works across providers (Anthropic Claude, Moonshot Kimi, Amazon Nova,
+    Meta Llama, etc.) using inference profile IDs or on-demand model IDs.
+    """
+
+    def __init__(
+        self,
+        model_id: str = "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        region: str = "us-west-2",
+        api_config: Optional[APIConfig] = None,
+    ) -> None:
+        self.model_id = model_id
+        self.region = region
+        self.api_config = api_config or APIConfig()
+        self._client: Any = None
+
+    def _get_client(self) -> Any:
+        if self._client is None:
+            try:
+                import boto3
+            except ImportError:
+                raise ImportError("boto3 is required for Bedrock: pip install boto3")
+            self._client = boto3.client("bedrock-runtime", region_name=self.region)
+        return self._client
+
+    def invoke(
+        self,
+        prompt: str,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> ModelResponse:
+        client = self._get_client()
+        cfg = config or {}
+        messages = [{"role": "user", "content": [{"text": prompt}]}]
+        inference_config: Dict[str, Any] = {
+            "maxTokens": cfg.get("max_tokens", 2048),
+            "temperature": cfg.get("temperature", 0.0),
+        }
+        try:
+            response = client.converse(
+                modelId=self.model_id,
+                messages=messages,
+                inferenceConfig=inference_config,
+            )
+        except Exception as exc:
+            # Some newer models (e.g. Claude Sonnet 5 / Opus 5) deprecate
+            # temperature — retry without it.
+            if "temperature" in str(exc).lower():
+                inference_config.pop("temperature", None)
+                response = client.converse(
+                    modelId=self.model_id,
+                    messages=messages,
+                    inferenceConfig=inference_config,
+                )
+            else:
+                raise
+        # Extract text from the response content blocks
+        content_blocks = response.get("output", {}).get("message", {}).get("content", [])
+        text = "".join(b.get("text", "") for b in content_blocks)
+        usage = response.get("usage", {})
+        tokens = usage.get("totalTokens", 0)
+        stop_reason = response.get("stopReason", "stop")
+        return ModelResponse(text=text, tokens_used=tokens, finish_reason=stop_reason)
+
+    def supports_tools(self) -> bool:
+        return True
+
+    def get_capabilities(self) -> ModelCapabilities:
+        return ModelCapabilities(
+            supports_tools=True,
+            supports_multimodal=False,
+            max_tokens=4096,
+            provider=ProviderEnum.CUSTOM,
+        )
+
+
 class LocalModelAdapter(ModelInterface):
     """Adapter for local models served via an OpenAI-compatible API (Ollama, vLLM)."""
 

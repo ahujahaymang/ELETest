@@ -23,6 +23,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -34,7 +35,7 @@ load_dotenv("linkedin_ai_manager/.env")
 load_dotenv(".env")
 
 from ele.core.cli import App, AppConfig
-from ele.core.models_integration import APIConfig, OpenAIAdapter
+from ele.core.models_integration import APIConfig, OpenAIAdapter, BedrockAdapter
 
 
 # ── Defaults ──────────────────────────────────────────────────────
@@ -75,6 +76,11 @@ def create_adapter(model_cfg: Dict[str, Any]):
     provider = model_cfg.get("provider", "openai")
     model_name = model_cfg.get("model_name", "gpt-4o-mini")
 
+    # Bedrock uses AWS credentials (not an API key) — no key check needed
+    if provider == "bedrock":
+        region = model_cfg.get("region", "us-west-2")
+        return BedrockAdapter(model_id=model_name, region=region), None
+
     # Resolve API key from env var name
     api_key_env = model_cfg.get("api_key_env", "OPENAI_API_KEY")
     api_key = model_cfg.get("api_key", "") or os.environ.get(api_key_env, "")
@@ -89,6 +95,94 @@ def create_adapter(model_cfg: Dict[str, Any]):
         return OpenAIAdapter(model_id=model_name, api_config=api_config), None
     else:
         return None, f"Unsupported provider: {provider}"
+
+
+# ── Transcript logging ────────────────────────────────────────────
+
+def write_transcripts(app, run, log_dir: Path) -> None:
+    """Write a complete, human-readable transcript per scenario.
+
+    Each transcript captures the full prompt sent to the model, every tool
+    call (query + full results), each intermediate model turn, the final
+    answer, and the complete scoring trace including the judge prompt and
+    raw judge response.
+    """
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    for i, r in enumerate(run.results, 1):
+        scenario = app.repository.get_scenario(r.scenario_id)
+        sr = r.scored_result
+        title = scenario.title if scenario else r.scenario_id[:8]
+        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:50]
+        fname = f"{i:03d}_{slug}.txt"
+
+        lines: List[str] = []
+        lines.append("=" * 70)
+        lines.append(f"SCENARIO: {title}")
+        lines.append(f"ID: {r.scenario_id}")
+        if scenario:
+            lines.append(f"Category: {scenario.category.value} | "
+                         f"Domain: {scenario.domain.value} | "
+                         f"Difficulty: {scenario.difficulty.value}")
+            lines.append(f"Answer format: {scenario.answer_format.value}")
+            if scenario.tools_available:
+                lines.append(f"Tools available: {', '.join(scenario.tools_available)}")
+        lines.append("=" * 70)
+        lines.append("")
+
+        # Prompt
+        lines.append("--- PROMPT SENT TO MODEL ---")
+        lines.append(r.prompt or "(prompt not captured)")
+        lines.append("")
+
+        # Tool call rounds
+        if r.tool_invocations:
+            lines.append("--- TOOL CALL TRACE ---")
+            for inv in r.tool_invocations:
+                lines.append(f"[Round {inv.get('round')}] model reasoning before tool call:")
+                lines.append(f"  {inv.get('assistant_text', '')}")
+                lines.append(f"[Round {inv.get('round')}] TOOL_CALL: "
+                             f"{inv.get('tool_id')}({json.dumps(inv.get('parameters', {}))})")
+                res = inv.get("result")
+                if inv.get("success", True):
+                    count = len(res) if isinstance(res, list) else "n/a"
+                    lines.append(f"  -> returned {count} result(s):")
+                    lines.append("  " + json.dumps(res, indent=2).replace("\n", "\n  "))
+                else:
+                    lines.append(f"  -> ERROR: {inv.get('error')}")
+                lines.append("")
+
+        # Final model response
+        lines.append("--- MODEL FINAL RESPONSE ---")
+        lines.append(r.model_response or "(no response)")
+        lines.append("")
+
+        # Scoring
+        lines.append("--- SCORING ---")
+        lines.append(f"Status: {r.status.value}")
+        if r.error_message:
+            lines.append(f"Error: {r.error_message}")
+        if sr:
+            lines.append(f"Scoring method: {sr.scoring_method.value}")
+            lines.append(f"Extracted answer: {sr.extracted_answer}")
+            lines.append(f"Correct answer:   {sr.correct_answer}")
+            lines.append(f"Exact match: {sr.exact_match}")
+            lines.append(f"Similarity score: {sr.similarity_score:.3f}")
+            if sr.judge_score is not None:
+                lines.append(f"Judge score: {sr.judge_score}")
+                lines.append(f"Judge reasoning: {sr.judge_reasoning}")
+                lines.append("")
+                lines.append("--- JUDGE PROMPT ---")
+                lines.append(sr.judge_prompt or "(not captured)")
+                lines.append("")
+                lines.append("--- JUDGE RAW RESPONSE ---")
+                lines.append(sr.judge_raw_response or "(not captured)")
+            lines.append("")
+            lines.append(f"FINAL SCORE: {sr.final_score}")
+        lines.append(f"Latency: {r.latency_ms}ms | Tokens: {r.tokens_used}")
+        lines.append("")
+
+        (log_dir / fname).write_text("\n".join(lines))
 
 
 # ── Main ──────────────────────────────────────────────────────────
@@ -258,6 +352,11 @@ def main():
                 method = f"[{sr.scoring_method.value}]" if sr else ""
                 tool_calls = f", tool_calls={len(r.tool_invocations)}" if r.tool_invocations else ""
                 print(f"    {status} {title}: score={score} {method}, latency={r.latency_ms}ms{tool_calls}")
+
+            # Write complete per-scenario transcripts
+            log_dir = _ROOT / "logs" / f"{model_id}_{eval_result['run_id'][:8]}"
+            write_transcripts(app, run, log_dir)
+            print(f"  Transcripts saved: {log_dir}")
 
     # ── Leaderboard ───────────────────────────────────────────────
     print("\n" + "=" * 60)

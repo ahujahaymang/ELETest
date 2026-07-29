@@ -17,6 +17,9 @@ venv/
 # Results (regenerated on each run — commit specific ones manually)
 results/*.json
 
+# Per-scenario transcripts (regenerated on each run)
+logs/
+
 # Environment
 .env
 .kiro_tmp

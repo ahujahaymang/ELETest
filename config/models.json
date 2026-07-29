@@ -11,6 +11,30 @@
       "provider": "openai",
       "model_name": "gpt-4o",
       "api_key_env": "OPENAI_API_KEY"
+    },
+    {
+      "id": "claude-sonnet-5",
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-sonnet-5",
+      "region": "us-west-2"
+    },
+    {
+      "id": "claude-opus-5",
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-opus-5",
+      "region": "us-west-2"
+    },
+    {
+      "id": "kimi-k2.5",
+      "provider": "bedrock",
+      "model_name": "moonshotai.kimi-k2.5",
+      "region": "us-west-2"
+    },
+    {
+      "id": "claude-fable-5",
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-fable-5",
+      "region": "us-west-2"
     }
   ]
 }

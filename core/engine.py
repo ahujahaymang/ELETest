@@ -78,6 +78,7 @@ class ScenarioResult:
     status: ResultStatusEnum = ResultStatusEnum.SUCCESS
     error_message: Optional[str] = None
     scored_result: Optional[ScoredResult] = None
+    prompt: str = ""  # the initial prompt sent to the model
 
 
 @dataclass
@@ -273,6 +274,7 @@ class EvaluationEngine:
                 tokens_used=tokens_used,
                 status=ResultStatusEnum.SUCCESS,
                 scored_result=scored,
+                prompt=prompt,
             )
 
         except TimeoutError:
@@ -348,6 +350,7 @@ class EvaluationEngine:
                 result_text = format_tool_result(tool_id, result)
                 invocation_record = {
                     "round": round_num + 1,
+                    "assistant_text": text,
                     "tool_id": tool_id,
                     "parameters": tool_params,
                     "result": result,
@@ -357,6 +360,7 @@ class EvaluationEngine:
                 result_text = f"TOOL_RESULT: {tool_id} — Error: {exc}"
                 invocation_record = {
                     "round": round_num + 1,
+                    "assistant_text": text,
                     "tool_id": tool_id,
                     "parameters": tool_params,
                     "result": None,
