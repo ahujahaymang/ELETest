@@ -119,6 +119,8 @@ class ScenarioRepository:
                     continue
                 if filters.contributor_name is not None and s.contributor.name != filters.contributor_name:
                     continue
+                if filters.split is not None and s.split != filters.split:
+                    continue
 
             results.append(copy.deepcopy(s))
         return results

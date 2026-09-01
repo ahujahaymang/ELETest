@@ -54,6 +54,21 @@ class StatusEnum(Enum):
     ARCHIVED = "archived"
 
 
+class SplitEnum(Enum):
+    """Which evaluation split a scenario belongs to.
+
+    - core_test:  primary, model-blind evaluation set. Items enter this set
+                  according to human-defined inclusion criteria without
+                  conditioning on whether target models succeed or fail.
+                  Used for unbiased inference about average enterprise capability.
+    - challenge:  adversarial / difficulty-focused set. May include items
+                  selected because earlier models struggled. Reported as
+                  stress-test performance.
+    """
+    CORE_TEST = "core_test"
+    CHALLENGE = "challenge"
+
+
 class RunStatusEnum(Enum):
     """Status of an evaluation run."""
     PENDING = "pending"
@@ -114,6 +129,10 @@ class Scenario:
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     version: int = 1
     status: StatusEnum = StatusEnum.ACTIVE
+    # Evaluation split — defaults to CHALLENGE so new/unlabelled scenarios
+    # do not enter the model-blind core test set by accident. Assign
+    # explicitly (in the scenario JSON) to move an item into core_test.
+    split: SplitEnum = SplitEnum.CHALLENGE
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the scenario to a plain dictionary."""
@@ -124,6 +143,7 @@ class Scenario:
         d["difficulty"] = self.difficulty.value
         d["answer_format"] = self.answer_format.value
         d["status"] = self.status.value
+        d["split"] = self.split.value
         return d
 
     def to_json(self) -> str:
@@ -139,6 +159,8 @@ class Scenario:
         d["difficulty"] = DifficultyEnum(d["difficulty"])
         d["answer_format"] = AnswerFormatEnum(d["answer_format"])
         d["status"] = StatusEnum(d["status"])
+        # Split defaults to CHALLENGE for scenarios that predate this field.
+        d["split"] = SplitEnum(d["split"]) if "split" in d else SplitEnum.CHALLENGE
         d["contributor"] = Contributor.from_dict(d["contributor"])
         return cls(**d)
 
@@ -156,6 +178,7 @@ class ScenarioFilters:
     difficulty: Optional[DifficultyEnum] = None
     contributor_name: Optional[str] = None
     status: Optional[StatusEnum] = None
+    split: Optional[SplitEnum] = None
 
 
 @dataclass

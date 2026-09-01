@@ -66,6 +66,15 @@ class DifficultyMetrics:
 
 
 @dataclass
+class SplitMetrics:
+    split: str = ""
+    total: int = 0
+    correct: int = 0
+    accuracy: float = 0.0
+    average_score: float = 0.0
+
+
+@dataclass
 class AggregateMetrics:
     overall_accuracy: float = 0.0
     exact_match_rate: float = 0.0
@@ -75,19 +84,27 @@ class AggregateMetrics:
     by_category: Dict[str, CategoryMetrics] = field(default_factory=dict)
     by_domain: Dict[str, DomainMetrics] = field(default_factory=dict)
     by_difficulty: Dict[str, DifficultyMetrics] = field(default_factory=dict)
+    by_split: Dict[str, SplitMetrics] = field(default_factory=dict)
     confidence_interval_lower: Optional[float] = None
     confidence_interval_upper: Optional[float] = None
 
 
 @dataclass
 class ScoredResultRecord:
-    """Flat record of a scored result for storage."""
+    """Flat record of a scored result for storage.
+
+    ``is_correct`` is the authoritative correctness flag: True iff the
+    response was an exact match OR the LLM judge scored the response at or
+    above the correctness_threshold (default 0.9). ``final_score`` stays
+    numeric (1.0 for exact, judge_score for judge decisions) as a diagnostic.
+    """
     scenario_id: str = ""
     model_response: str = ""
     correct_answer: str = ""
     extracted_answer: str = ""
     exact_match: bool = False
-    similarity_score: float = 0.0
+    is_correct: bool = False
+    similarity_score: float = 0.0            # diagnostic only, never scores
     final_score: float = 0.0
     scoring_method: str = ""
     explanation: str = ""
@@ -99,6 +116,7 @@ class ScoredResultRecord:
     category: str = ""
     domain: str = ""
     difficulty: str = ""
+    split: str = ""                          # core_test | challenge
     # LLM judge fields (None when judge was not used)
     judge_score: Optional[float] = None
     judge_reasoning: Optional[str] = None
@@ -141,6 +159,21 @@ class ComparisonReport:
 
 # --- Aggregate metrics calculation ---
 
+def _is_correct(record: ScoredResultRecord) -> bool:
+    """Correctness = the authoritative is_correct flag from scoring.
+
+    Falls back to ``final_score >= 0.9`` (matching the strict correctness
+    threshold in scoring.py) for legacy records saved before ``is_correct``
+    was introduced.
+    """
+    if record.is_correct:
+        return True
+    # Legacy fallback for records that predate the is_correct field.
+    if not record.exact_match:
+        return record.final_score >= 0.9
+    return False
+
+
 def calculate_aggregate_metrics(
     scored_results: List[ScoredResultRecord],
 ) -> AggregateMetrics:
@@ -150,7 +183,7 @@ def calculate_aggregate_metrics(
     if total == 0:
         return metrics
 
-    correct = sum(1 for r in scored_results if r.final_score >= 0.5)
+    correct = sum(1 for r in scored_results if _is_correct(r))
     exact_matches = sum(1 for r in scored_results if r.exact_match)
     total_similarity = sum(r.similarity_score for r in scored_results)
     total_latency = sum(r.latency_ms for r in scored_results)
@@ -170,19 +203,21 @@ def calculate_aggregate_metrics(
         metrics.confidence_interval_lower = max(0.0, (p - z * se)) * 100
         metrics.confidence_interval_upper = min(1.0, (p + z * se)) * 100
 
-    # Breakdowns by category
+    # Breakdowns
     cat_groups: Dict[str, List[ScoredResultRecord]] = {}
     dom_groups: Dict[str, List[ScoredResultRecord]] = {}
     diff_groups: Dict[str, List[ScoredResultRecord]] = {}
+    split_groups: Dict[str, List[ScoredResultRecord]] = {}
 
     for r in scored_results:
         cat_groups.setdefault(r.category, []).append(r)
         dom_groups.setdefault(r.domain, []).append(r)
         diff_groups.setdefault(r.difficulty, []).append(r)
+        split_groups.setdefault(r.split or "unknown", []).append(r)
 
     for cat, items in cat_groups.items():
         n = len(items)
-        c = sum(1 for i in items if i.final_score >= 0.5)
+        c = sum(1 for i in items if _is_correct(i))
         metrics.by_category[cat] = CategoryMetrics(
             category=cat,
             total=n,
@@ -194,7 +229,7 @@ def calculate_aggregate_metrics(
 
     for dom, items in dom_groups.items():
         n = len(items)
-        c = sum(1 for i in items if i.final_score >= 0.5)
+        c = sum(1 for i in items if _is_correct(i))
         metrics.by_domain[dom] = DomainMetrics(
             domain=dom,
             total=n,
@@ -206,9 +241,20 @@ def calculate_aggregate_metrics(
 
     for diff, items in diff_groups.items():
         n = len(items)
-        c = sum(1 for i in items if i.final_score >= 0.5)
+        c = sum(1 for i in items if _is_correct(i))
         metrics.by_difficulty[diff] = DifficultyMetrics(
             difficulty=diff,
+            total=n,
+            correct=c,
+            accuracy=(c / n) * 100 if n else 0.0,
+            average_score=sum(i.final_score for i in items) / n if n else 0.0,
+        )
+
+    for sp, items in split_groups.items():
+        n = len(items)
+        c = sum(1 for i in items if _is_correct(i))
+        metrics.by_split[sp] = SplitMetrics(
+            split=sp,
             total=n,
             correct=c,
             accuracy=(c / n) * 100 if n else 0.0,
@@ -323,6 +369,7 @@ class ResultsStore:
                 "correct_answer": sr.correct_answer,
                 "extracted_answer": sr.extracted_answer,
                 "exact_match": sr.exact_match,
+                "is_correct": sr.is_correct,
                 "similarity_score": sr.similarity_score,
                 "judge_score": sr.judge_score,
                 "judge_reasoning": sr.judge_reasoning,
@@ -334,6 +381,7 @@ class ResultsStore:
                 "category": sr.category,
                 "domain": sr.domain,
                 "difficulty": sr.difficulty,
+                "split": sr.split,
                 "tool_invocations": tool_trace,
             })
         return rows
