@@ -24,6 +24,7 @@ from threading import Lock
 from typing import Any, Dict, List, Optional
 
 from ele.core.models import (
+    PromptConditionEnum,
     ResultStatusEnum,
     RunStatusEnum,
     Scenario,
@@ -62,6 +63,7 @@ class EvaluationConfig:
     retry_on_failure: bool = False
     max_retries: int = 1
     max_tool_rounds: int = 5  # max tool-call iterations per scenario
+    prompt_condition: PromptConditionEnum = PromptConditionEnum.DIRECT  # §5.2
 
 
 # --- Result models ---
@@ -245,7 +247,7 @@ class EvaluationEngine:
                         "parameters": self._tool_registry.get_tool_schema(tid) or {},
                     })
 
-        prompt = format_prompt(scenario, tools_for_prompt)
+        prompt = format_prompt(scenario, tools_for_prompt, config.prompt_condition)
 
         start = time.monotonic()
         try:
